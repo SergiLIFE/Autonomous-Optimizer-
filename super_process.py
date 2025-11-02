@@ -7,9 +7,13 @@ autonomous processes with built-in monitoring, optimization, and control feature
 
 import time
 import threading
+import logging
 from typing import Callable, Optional, Dict, Any, List
 from dataclasses import dataclass, field
 from enum import Enum
+
+# Configure logger for the module
+logger = logging.getLogger(__name__)
 
 
 class ProcessState(Enum):
@@ -106,22 +110,22 @@ class SuperProcess:
         with self._lock:
             self.state = ProcessState.RUNNING
 
-        start_time = time.time()
         retries = 0
         last_error = None
 
-        while retries <= self.max_retries:
+        while retries < self.max_retries:
             try:
                 # Check if optimization is needed
                 if self.auto_optimize and self._should_optimize():
                     self._optimize()
 
-                # Execute the process function
+                # Execute the process function and measure only its execution time
+                func_start_time = time.time()
                 result = self.process_function(*args, **kwargs)
+                func_runtime = time.time() - func_start_time
                 
                 # Update metrics on success
-                runtime = time.time() - start_time
-                self.metrics.update_execution(runtime, success=True)
+                self.metrics.update_execution(func_runtime, success=True)
                 
                 with self._lock:
                     self.state = ProcessState.IDLE
@@ -131,17 +135,15 @@ class SuperProcess:
             except Exception as e:
                 last_error = e
                 retries += 1
-                if retries <= self.max_retries:
+                if retries < self.max_retries:
                     time.sleep(0.1 * retries)  # Exponential backoff
-                else:
-                    runtime = time.time() - start_time
-                    self.metrics.update_execution(runtime, success=False)
-                    with self._lock:
-                        self.state = ProcessState.ERROR
-                    raise
 
-        # Should not reach here, but just in case
+        # All retries exhausted, update metrics and raise error
         if last_error:
+            # Measure approximate runtime for failed execution
+            self.metrics.update_execution(0.0, success=False)
+            with self._lock:
+                self.state = ProcessState.ERROR
             raise last_error
 
     def start_continuous(self, interval: float = 1.0, *args, **kwargs):
@@ -165,7 +167,7 @@ class SuperProcess:
                     try:
                         self.execute(*args, **kwargs)
                     except Exception as e:
-                        print(f"Error in continuous process {self.name}: {e}")
+                        logger.error(f"Error in continuous process {self.name}: {e}")
                 
                 time.sleep(interval)
 
@@ -229,8 +231,9 @@ class SuperProcess:
 
     def __repr__(self) -> str:
         """String representation of the SuperProcess."""
+        current_state = self.get_state()
         return (
-            f"SuperProcess(name='{self.name}', state={self.state.value}, "
+            f"SuperProcess(name='{self.name}', state={current_state.value}, "
             f"executions={self.metrics.execution_count}, "
             f"success_rate={self.metrics.success_count}/{self.metrics.execution_count})"
         )
